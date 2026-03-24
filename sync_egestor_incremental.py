@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 # =========================
 # CONFIGURAÇÕES
 # =========================
-EGESTOR_PERSONAL_TOKEN = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiIxMGQxNzEzNGJiNmNkMTlkNGQ3YmNkYzgwNTNlNjRjMSIsInN1YmRvbWluaW8iOiJwYWRhcmlha3JvbmluZyIsImNsaWVudCI6IjY3Nzg4NmMxNDdkZWRiNWI3OTI2M2ZjYTUzZDMzNWY1M2Q1YTRmNzMiLCJjcmVhdGVkIjoxNzcyOTk5MTI0fQ==.dUAdBdESSI7mtkTvMeBRRXPOo5dWHIjpZRWHZCVuk6I=", "")
-SUPABASE_URL = os.getenv("https://grusczwscturplevobsv.supabase.co", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdydXNjendzY3R1cnBsZXZvYnN2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzcwNjQ2MCwiZXhwIjoyMDg5MjgyNDYwfQ.lpOXnPdkUI9sUWY28maWeJaKvfvu3rw780AIjwP_BSg", "")
+EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 JANELA_DIAS_VENDAS = int(os.getenv("JANELA_DIAS_VENDAS", "7"))
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
 
