@@ -13,7 +13,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 # carga completa desde o início
 DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27").strip()
 
-LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
+LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "500"))
 
 if not EGESTOR_PERSONAL_TOKEN:
     raise ValueError("EGESTOR_PERSONAL_TOKEN não definido.")
@@ -375,7 +375,7 @@ def tratar_vendas(lista, data_inicio: str, token: str):
             ),
         })
 
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     if datas_encontradas:
         log(f"menor data vinda da API: {min(datas_encontradas).strftime('%Y-%m-%d')}")
@@ -425,7 +425,7 @@ def tratar_itens_de_venda(vendas, mapa_produtos, token: str):
                 "valor_total": quantidade * valor_unitario,
             })
 
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     if resultado:
         log(f"primeiro item venda tratado: {resultado[0]}")
@@ -472,7 +472,7 @@ def tratar_recebimentos(lista, token: str):
         }
 
         resultado.append(registro)
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     if resultado:
         log(f"primeiro recebimento tratado: {resultado[0]}")
@@ -518,7 +518,7 @@ def tratar_pagamentos(lista, token: str):
         }
 
         resultado.append(registro)
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     if resultado:
         log(f"primeiro pagamento tratado: {resultado[0]}")
@@ -595,7 +595,7 @@ def main():
         log(f"qtd itens lote: {len(itens)}")
 
         enviar_supabase("eg_venda_itens", itens)
-        time.sleep(2)
+        time.sleep(0.2)
 
     # 6) recebimentos completos
     recebimentos = get_data_paginado("recebimentos", token)
