@@ -6,12 +6,13 @@ from datetime import datetime
 # =========================
 # CONFIGURAÇÕES
 # =========================
-EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 # carga completa desde o início
-DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27")
+DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27").strip()
+
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
 
 if not EGESTOR_PERSONAL_TOKEN:
@@ -52,15 +53,27 @@ def data_inicio_carga() -> str:
 # AUTH EGESTOR
 # =========================
 def get_token() -> str:
-    return EGESTOR_PERSONAL_TOKEN
+    url = "https://api.egestor.com.br/api/oauth/access_token"
+    payload = {
+        "grant_type": "personal",
+        "personal_token": EGESTOR_PERSONAL_TOKEN,
+    }
+
+    r = requests.post(url, json=payload, timeout=60)
+    log(f"AUTH status: {r.status_code}")
+    if r.status_code != 200:
+        log(r.text[:500])
+    r.raise_for_status()
+
+    body = r.json()
+    access_token = body.get("access_token")
+    if not access_token:
+        raise Exception("Não veio access_token do eGestor.")
+    return access_token
 
 
 def egestor_headers(token: str) -> dict:
-    return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    return {"Authorization": f"Bearer {token}"}
 
 
 # =========================
@@ -93,7 +106,6 @@ def get_data_paginado(endpoint: str, token: str):
     page = 1
     tentativas_429 = 0
     token_atual = token
-    tentativas_401 = 0
 
     while True:
         url = f"https://api.egestor.com.br/api/v1/{endpoint}?page={page}"
@@ -110,18 +122,11 @@ def get_data_paginado(endpoint: str, token: str):
             continue
 
         if r.status_code == 401:
-            tentativas_401 += 1
-            if tentativas_401 > 2:
-                log(f"{endpoint} página {page}: token inválido ou expirado definitivamente")
-                log(r.text[:1000])
-                r.raise_for_status()
-
-            log(f"{endpoint} página {page}: 401, reutilizando token da variável")
+            log(f"{endpoint} página {page}: token expirado, renovando")
             token_atual = get_token()
             time.sleep(1)
             continue
 
-        tentativas_401 = 0
         tentativas_429 = 0
 
         if r.status_code != 200:
@@ -150,7 +155,6 @@ def get_data_paginado(endpoint: str, token: str):
 
 def get_detalhe(endpoint: str, codigo, token: str):
     token_atual = token
-    tentativas_401 = 0
 
     while True:
         url = f"https://api.egestor.com.br/api/v1/{endpoint}/{codigo}"
@@ -165,18 +169,10 @@ def get_detalhe(endpoint: str, codigo, token: str):
             continue
 
         if r.status_code == 401:
-            tentativas_401 += 1
-            if tentativas_401 > 2:
-                log(f"detalhe {endpoint} {codigo}: token inválido ou expirado definitivamente")
-                log(r.text[:1000])
-                return None
-
-            log(f"detalhe {endpoint} {codigo}: 401, reutilizando token da variável")
+            log(f"detalhe {endpoint} {codigo}: token expirado, renovando")
             token_atual = get_token()
             time.sleep(1)
             continue
-
-        tentativas_401 = 0
 
         if r.status_code != 200:
             log(r.text[:1000])
@@ -555,7 +551,6 @@ def tratar_plano_contas(lista):
 # MAIN
 # =========================
 def main():
-    print("TOKEN:", EGESTOR_PERSONAL_TOKEN[:10])
     log("INICIOU CARGA COMPLETA DESDE O INÍCIO")
 
     token = get_token()
