@@ -6,13 +6,12 @@ from datetime import datetime
 # =========================
 # CONFIGURAÇÕES
 # =========================
-EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "").strip()
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # carga completa desde o início
-DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27").strip()
-
+DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27")
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
 
 if not EGESTOR_PERSONAL_TOKEN:
