@@ -16,6 +16,8 @@ DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27").strip()
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
 
 if not EGESTOR_PERSONAL_TOKEN:
+    print("DEBUG ENV KEYS:", list(os.environ.keys()))
+    print("DEBUG TOKEN LEN:", len(os.getenv("EGESTOR_PERSONAL_TOKEN", "")))
     raise ValueError("EGESTOR_PERSONAL_TOKEN não definido.")
 if not SUPABASE_URL:
     raise ValueError("SUPABASE_URL não definido.")
