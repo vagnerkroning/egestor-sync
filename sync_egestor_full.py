@@ -556,6 +556,7 @@ def tratar_plano_contas(lista):
 # MAIN
 # =========================
 def main():
+    print("TOKEN:", EGESTOR_PERSONAL_TOKEN[:10])
     log("INICIOU CARGA COMPLETA DESDE O INÍCIO")
 
     token = get_token()
