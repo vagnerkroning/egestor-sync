@@ -6,12 +6,12 @@ from datetime import datetime
 # =========================
 # CONFIGURAÇÕES
 # =========================
-EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+EGESTOR_PERSONAL_TOKEN = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiIxMGQxNzEzNGJiNmNkMTlkNGQ3YmNkYzgwNTNlNjRjMSIsInN1YmRvbWluaW8iOiJwYWRhcmlha3JvbmluZyIsImNsaWVudCI6IjY3Nzg4NmMxNDdkZWRiNWI3OTI2M2ZjYTUzZDMzNWY1M2Q1YTRmNzMiLCJjcmVhdGVkIjoxNzcyOTk5MTI0fQ==.dUAdBdESSI7mtkTvMeBRRXPOo5dWHIjpZRWHZCVuk6I=", "").strip()
+SUPABASE_URL = os.getenv("https://grusczwscturplevobsv.supabase.co", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdydXNjendzY3R1cnBsZXZvYnN2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzcwNjQ2MCwiZXhwIjoyMDg5MjgyNDYwfQ.lpOXnPdkUI9sUWY28maWeJaKvfvu3rw780AIjwP_BSg", "").strip()
 
 # carga completa desde o início
-DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27")
+DATA_INICIO_VENDAS = os.getenv("DATA_INICIO_VENDAS", "2025-10-27").strip()
 
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
 
@@ -53,23 +53,15 @@ def data_inicio_carga() -> str:
 # AUTH EGESTOR
 # =========================
 def get_token() -> str:
-    url = "https://api.egestor.com.br/api/oauth/access_token"
-    payload = {
-        "grant_type": "personal",
-        "personal_token": EGESTOR_PERSONAL_TOKEN,
+    return EGESTOR_PERSONAL_TOKEN
+
+
+def egestor_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
-
-    r = requests.post(url, json=payload, timeout=60)
-    log(f"AUTH status: {r.status_code}")
-    if r.status_code != 200:
-        log(r.text[:500])
-    r.raise_for_status()
-
-    body = r.json()
-    access_token = body.get("access_token")
-    if not access_token:
-        raise Exception("Não veio access_token do eGestor.")
-    return access_token
 
 
 # =========================
@@ -77,7 +69,7 @@ def get_token() -> str:
 # =========================
 def get_data(endpoint: str, token: str):
     url = f"https://api.egestor.com.br/api/v1/{endpoint}"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = egestor_headers(token)
 
     r = requests.get(url, headers=headers, timeout=120)
     log(f"{endpoint} status: {r.status_code}")
@@ -102,10 +94,11 @@ def get_data_paginado(endpoint: str, token: str):
     page = 1
     tentativas_429 = 0
     token_atual = token
+    tentativas_401 = 0
 
     while True:
         url = f"https://api.egestor.com.br/api/v1/{endpoint}?page={page}"
-        headers = {"Authorization": f"Bearer {token_atual}"}
+        headers = egestor_headers(token_atual)
 
         r = requests.get(url, headers=headers, timeout=120)
         log(f"{endpoint} página {page} status: {r.status_code}")
@@ -118,11 +111,18 @@ def get_data_paginado(endpoint: str, token: str):
             continue
 
         if r.status_code == 401:
-            log(f"{endpoint} página {page}: token expirado, renovando")
+            tentativas_401 += 1
+            if tentativas_401 > 2:
+                log(f"{endpoint} página {page}: token inválido ou expirado definitivamente")
+                log(r.text[:1000])
+                r.raise_for_status()
+
+            log(f"{endpoint} página {page}: 401, reutilizando token da variável")
             token_atual = get_token()
             time.sleep(1)
             continue
 
+        tentativas_401 = 0
         tentativas_429 = 0
 
         if r.status_code != 200:
@@ -151,10 +151,11 @@ def get_data_paginado(endpoint: str, token: str):
 
 def get_detalhe(endpoint: str, codigo, token: str):
     token_atual = token
+    tentativas_401 = 0
 
     while True:
         url = f"https://api.egestor.com.br/api/v1/{endpoint}/{codigo}"
-        headers = {"Authorization": f"Bearer {token_atual}"}
+        headers = egestor_headers(token_atual)
 
         r = requests.get(url, headers=headers, timeout=120)
         log(f"detalhe {endpoint} {codigo} status: {r.status_code}")
@@ -165,10 +166,18 @@ def get_detalhe(endpoint: str, codigo, token: str):
             continue
 
         if r.status_code == 401:
-            log(f"detalhe {endpoint} {codigo}: token expirado, renovando")
+            tentativas_401 += 1
+            if tentativas_401 > 2:
+                log(f"detalhe {endpoint} {codigo}: token inválido ou expirado definitivamente")
+                log(r.text[:1000])
+                return None
+
+            log(f"detalhe {endpoint} {codigo}: 401, reutilizando token da variável")
             token_atual = get_token()
             time.sleep(1)
             continue
+
+        tentativas_401 = 0
 
         if r.status_code != 200:
             log(r.text[:1000])
