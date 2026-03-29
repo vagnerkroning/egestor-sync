@@ -2,15 +2,17 @@ import os
 import time
 import requests
 from datetime import datetime, timedelta
+from requests.exceptions import RequestException, SSLError, ConnectionError, Timeout
 
 # =========================
 # CONFIGURAÇÕES
 # =========================
-EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-JANELA_DIAS_VENDAS = int(os.getenv("JANELA_DIAS_VENDAS", "7"))
-LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "100"))
+EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+DIAS_INCREMENTAL = int(os.getenv("DIAS_INCREMENTAL", "7"))
+LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "500"))
 
 if not EGESTOR_PERSONAL_TOKEN:
     raise ValueError("EGESTOR_PERSONAL_TOKEN não definido.")
@@ -24,7 +26,7 @@ if not SUPABASE_SERVICE_ROLE_KEY:
 # UTIL
 # =========================
 def log(msg: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def to_float(valor, padrao=0.0) -> float:
@@ -43,7 +45,35 @@ def to_str(valor, padrao="") -> str:
 
 
 def data_inicio_incremental() -> str:
-    return (datetime.now() - timedelta(days=JANELA_DIAS_VENDAS)).strftime("%Y-%m-%d")
+    return (datetime.now() - timedelta(days=DIAS_INCREMENTAL)).strftime("%Y-%m-%d")
+
+
+# =========================
+# HTTP COM RETRY
+# =========================
+def request_com_retry(method: str, url: str, headers=None, json=None, timeout=120, tentativas=6):
+    ultimo_erro = None
+
+    for tentativa in range(1, tentativas + 1):
+        try:
+            if method == "GET":
+                r = requests.get(url, headers=headers, timeout=timeout)
+            elif method == "POST":
+                r = requests.post(url, headers=headers, json=json, timeout=timeout)
+            elif method == "DELETE":
+                r = requests.delete(url, headers=headers, timeout=timeout)
+            else:
+                raise ValueError(f"Método inválido: {method}")
+
+            return r
+
+        except (SSLError, ConnectionError, Timeout, RequestException) as e:
+            ultimo_erro = e
+            espera = min(3 * tentativa, 20)
+            log(f"erro de conexão {method} {url} | tentativa {tentativa}/{tentativas} | aguardando {espera}s | erro: {e}")
+            time.sleep(espera)
+
+    raise ultimo_erro
 
 
 # =========================
@@ -56,11 +86,12 @@ def get_token() -> str:
         "personal_token": EGESTOR_PERSONAL_TOKEN,
     }
 
-    r = requests.post(url, json=payload, timeout=60)
+    r = request_com_retry("POST", url, json=payload, timeout=60, tentativas=5)
     log(f"AUTH status: {r.status_code}")
+
     if r.status_code != 200:
         log(r.text[:500])
-    r.raise_for_status()
+        r.raise_for_status()
 
     body = r.json()
     access_token = body.get("access_token")
@@ -69,29 +100,38 @@ def get_token() -> str:
     return access_token
 
 
+def egestor_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
 # =========================
 # API EGESTOR
 # =========================
 def get_data(endpoint: str, token: str):
+    token_atual = token
     url = f"https://api.egestor.com.br/api/v1/{endpoint}"
-    headers = {"Authorization": f"Bearer {token}"}
 
-    r = requests.get(url, headers=headers, timeout=120)
-    log(f"{endpoint} status: {r.status_code}")
+    for _ in range(3):
+        headers = egestor_headers(token_atual)
+        r = request_com_retry("GET", url, headers=headers, timeout=120, tentativas=5)
+        log(f"{endpoint} status: {r.status_code}")
 
-    if r.status_code != 200:
-        log(r.text[:1000])
+        if r.status_code == 401:
+            log(f"{endpoint}: token expirado, renovando")
+            token_atual = get_token()
+            time.sleep(1)
+            continue
 
-    r.raise_for_status()
+        if r.status_code != 200:
+            log(r.text[:1000])
+            r.raise_for_status()
 
-    body = r.json()
-    data = body.get("data", [])
+        body = r.json()
+        data = body.get("data", [])
+        log(f"{endpoint}: {len(data)} registros")
+        return data
 
-    log(f"{endpoint}: {len(data)} registros")
-    if data:
-        log(f"exemplo {endpoint}: {data[0]}")
-
-    return data
+    raise Exception(f"Falha ao buscar {endpoint} após renovar token.")
 
 
 def get_data_paginado(endpoint: str, token: str):
@@ -102,9 +142,9 @@ def get_data_paginado(endpoint: str, token: str):
 
     while True:
         url = f"https://api.egestor.com.br/api/v1/{endpoint}?page={page}"
-        headers = {"Authorization": f"Bearer {token_atual}"}
+        headers = egestor_headers(token_atual)
 
-        r = requests.get(url, headers=headers, timeout=120)
+        r = request_com_retry("GET", url, headers=headers, timeout=120, tentativas=5)
         log(f"{endpoint} página {page} status: {r.status_code}")
 
         if r.status_code == 429:
@@ -136,42 +176,50 @@ def get_data_paginado(endpoint: str, token: str):
         log(f"{endpoint} página {page}: {len(data)} registros")
 
         page += 1
-        time.sleep(0.4)
+        time.sleep(0.1)
 
     log(f"TOTAL {endpoint}: {len(all_data)} registros")
-    if all_data:
-        log(f"{endpoint} primeiro bruto: {all_data[0]}")
-        log(f"{endpoint} último bruto: {all_data[-1]}")
-
     return all_data
 
 
 def get_detalhe(endpoint: str, codigo, token: str):
     token_atual = token
+    tentativas_429 = 0
 
-    while True:
+    for tentativa in range(1, 6):
         url = f"https://api.egestor.com.br/api/v1/{endpoint}/{codigo}"
-        headers = {"Authorization": f"Bearer {token_atual}"}
+        headers = egestor_headers(token_atual)
 
-        r = requests.get(url, headers=headers, timeout=120)
-        log(f"detalhe {endpoint} {codigo} status: {r.status_code}")
+        try:
+            r = request_com_retry("GET", url, headers=headers, timeout=120, tentativas=4)
+            log(f"detalhe {endpoint} {codigo} status: {r.status_code}")
 
-        if r.status_code == 429:
-            log(f"detalhe {endpoint} {codigo}: limite da API, aguardando 10s")
-            time.sleep(10)
-            continue
+            if r.status_code == 429:
+                tentativas_429 += 1
+                espera = min(10 * tentativas_429, 60)
+                log(f"detalhe {endpoint} {codigo}: limite da API, aguardando {espera}s")
+                time.sleep(espera)
+                continue
 
-        if r.status_code == 401:
-            log(f"detalhe {endpoint} {codigo}: token expirado, renovando")
-            token_atual = get_token()
-            time.sleep(1)
-            continue
+            if r.status_code == 401:
+                log(f"detalhe {endpoint} {codigo}: token expirado, renovando")
+                token_atual = get_token()
+                time.sleep(1)
+                continue
 
-        if r.status_code != 200:
-            log(r.text[:1000])
-            return None
+            if r.status_code != 200:
+                log(r.text[:1000])
+                return None
 
-        return r.json()
+            return r.json()
+
+        except Exception as e:
+            espera = min(5 * tentativa, 30)
+            log(f"detalhe {endpoint} {codigo}: erro transitório, tentativa {tentativa}/5, aguardando {espera}s | erro: {e}")
+            time.sleep(espera)
+
+    log(f"detalhe {endpoint} {codigo}: falhou após várias tentativas, pulando")
+    return None
 
 
 # =========================
@@ -196,16 +244,16 @@ def enviar_supabase(tabela: str, dados) -> None:
         "Prefer": "resolution=merge-duplicates,return=representation",
     }
 
-    r = requests.post(url, headers=headers, json=dados, timeout=120)
+    r = request_com_retry("POST", url, headers=headers, json=dados, timeout=120, tentativas=5)
     log(f"{tabela} supabase status: {r.status_code}")
     if r.status_code >= 300:
         log(r.text[:1000])
     r.raise_for_status()
 
 
-def deletar_vendas_janela(data_inicio: str) -> None:
+def deletar_vendas_desde(data_inicio: str) -> None:
     url = f"{SUPABASE_URL}/rest/v1/eg_vendas?data_venda=gte.{data_inicio}"
-    r = requests.delete(url, headers=supabase_headers(), timeout=120)
+    r = request_com_retry("DELETE", url, headers=supabase_headers(), timeout=120, tentativas=5)
     log(f"delete eg_vendas desde {data_inicio}: {r.status_code}")
     if r.text:
         log(r.text[:300])
@@ -224,47 +272,46 @@ def deletar_itens_venda_ids(lista_ids_venda) -> None:
         ids = ",".join([f'"{x}"' for x in parte])
         url = f"{SUPABASE_URL}/rest/v1/eg_venda_itens?venda_id=in.({ids})"
 
-        r = requests.delete(url, headers=headers, timeout=120)
+        r = request_com_retry("DELETE", url, headers=headers, timeout=120, tentativas=5)
         log(f"delete eg_venda_itens lote {i} até {i + bloco}: {r.status_code}")
         if r.text:
             log(r.text[:300])
-        time.sleep(0.3)
+        time.sleep(0.05)
+
+
+def deletar_por_data(tabela: str, campo_data: str, data_inicio: str) -> None:
+    url = f"{SUPABASE_URL}/rest/v1/{tabela}?{campo_data}=gte.{data_inicio}"
+    r = request_com_retry("DELETE", url, headers=supabase_headers(), timeout=120, tentativas=5)
+    log(f"delete {tabela} desde {data_inicio}: {r.status_code}")
+    if r.text:
+        log(r.text[:300])
 
 
 # =========================
-# CATEGORIAS
+# CATEGORIAS / PRODUTOS
 # =========================
-def tratar_categorias(lista):
-    resultado = []
-
-    for item in lista:
-        resultado.append({
-            "id_origem": to_str(item.get("codigo") or item.get("id")),
-            "nome": item.get("nome") or item.get("descricao"),
-            "situacao": item.get("situacao") or "OK",
-        })
-
-    if resultado:
-        log(f"categoria tratada: {resultado[0]}")
-    return resultado
-
-
 def montar_mapa_categorias(lista_categorias):
     mapa = {}
-
     for item in lista_categorias:
         codigo = item.get("codigo") or item.get("id")
         nome = item.get("nome") or item.get("descricao")
         if codigo is not None:
             mapa[str(codigo)] = nome
-
-    log(f"mapa categorias com {len(mapa)} itens")
     return mapa
 
 
-# =========================
-# PRODUTOS
-# =========================
+def montar_mapa_produtos(produtos_tratados):
+    mapa = {}
+    for p in produtos_tratados:
+        mapa[str(p["id_origem"])] = {
+            "nome": p.get("nome"),
+            "categoria_id": p.get("categoria_id"),
+            "categoria_nome": p.get("categoria_nome"),
+            "custo": p.get("custo", 0),
+        }
+    return mapa
+
+
 def tratar_produtos(lista, mapa_categorias):
     resultado = []
 
@@ -286,33 +333,16 @@ def tratar_produtos(lista, mapa_categorias):
             "situacao": "OK",
         })
 
-    if resultado:
-        log(f"produto tratado: {resultado[0]}")
     return resultado
 
 
-def montar_mapa_produtos(produtos_tratados):
-    mapa = {}
-
-    for p in produtos_tratados:
-        mapa[str(p["id_origem"])] = {
-            "nome": p.get("nome"),
-            "categoria_id": p.get("categoria_id"),
-            "categoria_nome": p.get("categoria_nome"),
-            "custo": p.get("custo", 0),
-        }
-
-    log(f"mapa produtos montado com {len(mapa)} itens")
-    return mapa
-
-
 # =========================
-# VENDAS
+# VENDAS + ITENS
 # =========================
-def tratar_vendas(lista, data_inicio: str, token: str):
-    resultado = []
+def tratar_vendas_e_detalhes(lista, data_inicio: str, token: str):
+    vendas_tratadas = []
+    detalhes_vendas = {}
     data_inicio_dt = datetime.strptime(data_inicio, "%Y-%m-%d")
-    datas_encontradas = []
 
     for item in lista:
         data_str = (
@@ -330,8 +360,6 @@ def tratar_vendas(lista, data_inicio: str, token: str):
         except Exception:
             continue
 
-        datas_encontradas.append(data_obj)
-
         if data_obj < data_inicio_dt:
             continue
 
@@ -343,8 +371,11 @@ def tratar_vendas(lista, data_inicio: str, token: str):
         if not detalhe:
             continue
 
-        resultado.append({
-            "id_origem": to_str(detalhe.get("codigo") or detalhe.get("id")),
+        id_venda = to_str(detalhe.get("codigo") or detalhe.get("id"))
+        detalhes_vendas[id_venda] = detalhe
+
+        vendas_tratadas.append({
+            "id_origem": id_venda,
             "data_venda": to_str(detalhe.get("dtVenda") or data_str)[:10],
             "numero": to_str(detalhe.get("numDoc") or detalhe.get("numero") or ""),
             "cliente_id": to_str(detalhe.get("codContato") or ""),
@@ -368,34 +399,15 @@ def tratar_vendas(lista, data_inicio: str, token: str):
             ),
         })
 
-        time.sleep(0.2)
+        time.sleep(0.01)
 
-    if datas_encontradas:
-        log(f"menor data vinda da API: {min(datas_encontradas).strftime('%Y-%m-%d')}")
-        log(f"maior data vinda da API: {max(datas_encontradas).strftime('%Y-%m-%d')}")
-
-    if resultado:
-        log(f"primeira venda tratada: {resultado[0]}")
-        log(f"última venda tratada: {resultado[-1]}")
-
-    return resultado
+    return vendas_tratadas, detalhes_vendas
 
 
-# =========================
-# ITENS DE VENDA
-# =========================
-def tratar_itens_de_venda(vendas, mapa_produtos, token: str):
+def tratar_itens_de_venda_por_detalhes(detalhes_vendas, mapa_produtos):
     resultado = []
 
-    for venda in vendas:
-        codigo_venda = venda.get("id_origem") or venda.get("id") or venda.get("codigo")
-        if not codigo_venda:
-            continue
-
-        detalhe = get_detalhe("vendas", codigo_venda, token)
-        if not detalhe:
-            continue
-
+    for codigo_venda, detalhe in detalhes_vendas.items():
         produtos = detalhe.get("produtos") or []
 
         for item in produtos:
@@ -418,19 +430,15 @@ def tratar_itens_de_venda(vendas, mapa_produtos, token: str):
                 "valor_total": quantidade * valor_unitario,
             })
 
-        time.sleep(0.2)
-
-    if resultado:
-        log(f"primeiro item venda tratado: {resultado[0]}")
-
     return resultado
 
 
 # =========================
-# RECEBIMENTOS
+# RECEBIMENTOS / PAGAMENTOS
 # =========================
-def tratar_recebimentos(lista, token: str):
+def tratar_recebimentos(lista, token: str, data_inicio: str):
     resultado = []
+    data_inicio_dt = datetime.strptime(data_inicio, "%Y-%m-%d")
 
     for item in lista:
         codigo = item.get("codigo") or item.get("id")
@@ -441,14 +449,24 @@ def tratar_recebimentos(lista, token: str):
         if not detalhe:
             continue
 
-        registro = {
+        data_str = to_str(
+            detalhe.get("dtVenc")
+            or detalhe.get("dtRec")
+            or detalhe.get("dtPgto")
+            or detalhe.get("data")
+        )[:10]
+
+        try:
+            data_obj = datetime.strptime(data_str, "%Y-%m-%d")
+        except Exception:
+            continue
+
+        if data_obj < data_inicio_dt:
+            continue
+
+        resultado.append({
             "id_origem": to_str(detalhe.get("codigo") or detalhe.get("id")),
-            "data": to_str(
-                detalhe.get("dtVenc")
-                or detalhe.get("dtRec")
-                or detalhe.get("dtPgto")
-                or detalhe.get("data")
-            )[:10],
+            "data": data_str,
             "contato_id": to_str(detalhe.get("codContato") or ""),
             "contato_nome": (
                 detalhe.get("nomeContato")
@@ -462,22 +480,16 @@ def tratar_recebimentos(lista, token: str):
             "valor": to_float(detalhe.get("valor")),
             "situacao": to_str(detalhe.get("situacao") or ""),
             "origem": "recebimento",
-        }
+        })
 
-        resultado.append(registro)
-        time.sleep(0.2)
-
-    if resultado:
-        log(f"primeiro recebimento tratado: {resultado[0]}")
+        time.sleep(0.01)
 
     return resultado
 
 
-# =========================
-# PAGAMENTOS
-# =========================
-def tratar_pagamentos(lista, token: str):
+def tratar_pagamentos(lista, token: str, data_inicio: str):
     resultado = []
+    data_inicio_dt = datetime.strptime(data_inicio, "%Y-%m-%d")
 
     for item in lista:
         codigo = item.get("codigo") or item.get("id")
@@ -488,13 +500,23 @@ def tratar_pagamentos(lista, token: str):
         if not detalhe:
             continue
 
-        registro = {
+        data_str = to_str(
+            detalhe.get("dtVenc")
+            or detalhe.get("dtPgto")
+            or detalhe.get("data")
+        )[:10]
+
+        try:
+            data_obj = datetime.strptime(data_str, "%Y-%m-%d")
+        except Exception:
+            continue
+
+        if data_obj < data_inicio_dt:
+            continue
+
+        resultado.append({
             "id_origem": to_str(detalhe.get("codigo") or detalhe.get("id")),
-            "data": to_str(
-                detalhe.get("dtVenc")
-                or detalhe.get("dtPgto")
-                or detalhe.get("data")
-            )[:10],
+            "data": data_str,
             "contato_id": to_str(detalhe.get("codContato") or ""),
             "contato_nome": (
                 detalhe.get("nomeContato")
@@ -508,34 +530,9 @@ def tratar_pagamentos(lista, token: str):
             "valor": to_float(detalhe.get("valor")),
             "situacao": to_str(detalhe.get("situacao") or ""),
             "origem": "pagamento",
-        }
-
-        resultado.append(registro)
-        time.sleep(0.2)
-
-    if resultado:
-        log(f"primeiro pagamento tratado: {resultado[0]}")
-
-    return resultado
-
-
-# =========================
-# PLANO DE CONTAS
-# =========================
-def tratar_plano_contas(lista):
-    resultado = []
-
-    for item in lista:
-        resultado.append({
-            "id_origem": to_str(item.get("codigo") or item.get("id")),
-            "nome": item.get("nome") or "",
-            "tipo": to_str(item.get("tipo") or ""),
-            "grupo": to_str(item.get("codPai") or ""),
-            "situacao": "OK",
         })
 
-    if resultado:
-        log(f"primeiro plano de contas tratado: {resultado[0]}")
+        time.sleep(0.01)
 
     return resultado
 
@@ -544,63 +541,57 @@ def tratar_plano_contas(lista):
 # MAIN
 # =========================
 def main():
-    log("INICIOU MODO INCREMENTAL")
+    data_inicio = data_inicio_incremental()
+    log(f"INICIOU INCREMENTAL | últimos {DIAS_INCREMENTAL} dias | desde {data_inicio}")
 
     token = get_token()
 
-    # 1) categorias
+    # categorias e produtos atualizados para manter nomes/categorias alinhados
     categorias = get_data("categorias", token)
-    categorias_tratadas = tratar_categorias(categorias)
-    enviar_supabase("eg_categorias", categorias_tratadas)
     mapa_categorias = montar_mapa_categorias(categorias)
 
-    # 2) produtos
     produtos = get_data_paginado("produtos", token)
     produtos_tratados = tratar_produtos(produtos, mapa_categorias)
     enviar_supabase("eg_produtos", produtos_tratados)
     mapa_produtos = montar_mapa_produtos(produtos_tratados)
 
-    # 3) plano de contas
-    plano_contas = get_data_paginado("planoContas", token)
-    plano_contas_tratados = tratar_plano_contas(plano_contas)
-    enviar_supabase("eg_plano_contas", plano_contas_tratados)
-
-    # 4) vendas incrementais
-    data_inicio = data_inicio_incremental()
-    log(f"Buscando vendas desde: {data_inicio}")
-
+    # vendas últimos 7 dias
     vendas = get_data_paginado("vendas", token)
-    vendas_tratadas = tratar_vendas(vendas, data_inicio, token)
-    log(f"qtd vendas tratadas: {len(vendas_tratadas)}")
+    vendas_tratadas, detalhes_vendas = tratar_vendas_e_detalhes(vendas, data_inicio, token)
+    log(f"qtd vendas incremental: {len(vendas_tratadas)}")
 
-    deletar_vendas_janela(data_inicio)
+    deletar_vendas_desde(data_inicio)
     enviar_supabase("eg_vendas", vendas_tratadas)
 
-    # 5) itens de venda da janela
     ids_venda = [v["id_origem"] for v in vendas_tratadas]
     deletar_itens_venda_ids(ids_venda)
 
-    for i in range(0, len(vendas_tratadas), LOTE_ITENS_VENDA):
-        bloco = vendas_tratadas[i:i + LOTE_ITENS_VENDA]
-        log(f"Processando vendas {i} até {i + LOTE_ITENS_VENDA}")
+    ids_em_ordem = [v["id_origem"] for v in vendas_tratadas]
+    for i in range(0, len(ids_em_ordem), LOTE_ITENS_VENDA):
+        lote_ids = ids_em_ordem[i:i + LOTE_ITENS_VENDA]
+        log(f"Processando lote de itens {i} até {i + LOTE_ITENS_VENDA}")
 
-        itens = tratar_itens_de_venda(bloco, mapa_produtos, token)
+        detalhes_lote = {k: detalhes_vendas[k] for k in lote_ids if k in detalhes_vendas}
+        itens = tratar_itens_de_venda_por_detalhes(detalhes_lote, mapa_produtos)
         log(f"qtd itens lote: {len(itens)}")
-
         enviar_supabase("eg_venda_itens", itens)
-        time.sleep(2)
+        time.sleep(0.05)
 
-    # 6) recebimentos completos
+    # recebimentos últimos 7 dias
     recebimentos = get_data_paginado("recebimentos", token)
-    recebimentos_tratados = tratar_recebimentos(recebimentos, token)
+    recebimentos_tratados = tratar_recebimentos(recebimentos, token, data_inicio)
+    log(f"qtd recebimentos incremental: {len(recebimentos_tratados)}")
+    deletar_por_data("eg_recebimentos", "data", data_inicio)
     enviar_supabase("eg_recebimentos", recebimentos_tratados)
 
-    # 7) pagamentos completos
+    # pagamentos últimos 7 dias
     pagamentos = get_data_paginado("pagamentos", token)
-    pagamentos_tratados = tratar_pagamentos(pagamentos, token)
+    pagamentos_tratados = tratar_pagamentos(pagamentos, token, data_inicio)
+    log(f"qtd pagamentos incremental: {len(pagamentos_tratados)}")
+    deletar_por_data("eg_pagamentos", "data", data_inicio)
     enviar_supabase("eg_pagamentos", pagamentos_tratados)
 
-    log("FINALIZADO MODO INCREMENTAL")
+    log("FINALIZADO INCREMENTAL DOS ÚLTIMOS 7 DIAS")
 
 
 if __name__ == "__main__":
