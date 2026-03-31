@@ -11,7 +11,7 @@ EGESTOR_PERSONAL_TOKEN = os.getenv("EGESTOR_PERSONAL_TOKEN", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
-DIAS_INCREMENTAL = int(os.getenv("DIAS_INCREMENTAL", "7"))
+DIAS_INCREMENTAL = int(os.getenv("DIAS_INCREMENTAL", "2"))
 LOTE_ITENS_VENDA = int(os.getenv("LOTE_ITENS_VENDA", "500"))
 
 if not EGESTOR_PERSONAL_TOKEN:
@@ -555,7 +555,7 @@ def main():
     enviar_supabase("eg_produtos", produtos_tratados)
     mapa_produtos = montar_mapa_produtos(produtos_tratados)
 
-    # vendas últimos 7 dias
+    # vendas últimos 2 dias
     vendas = get_data_paginado("vendas", token)
     vendas_tratadas, detalhes_vendas = tratar_vendas_e_detalhes(vendas, data_inicio, token)
     log(f"qtd vendas incremental: {len(vendas_tratadas)}")
@@ -577,21 +577,21 @@ def main():
         enviar_supabase("eg_venda_itens", itens)
         time.sleep(0.05)
 
-    # recebimentos últimos 7 dias
+    # recebimentos últimos 2 dias
     recebimentos = get_data_paginado("recebimentos", token)
     recebimentos_tratados = tratar_recebimentos(recebimentos, token, data_inicio)
     log(f"qtd recebimentos incremental: {len(recebimentos_tratados)}")
     deletar_por_data("eg_recebimentos", "data", data_inicio)
     enviar_supabase("eg_recebimentos", recebimentos_tratados)
 
-    # pagamentos últimos 7 dias
+    # pagamentos últimos 2 dias
     pagamentos = get_data_paginado("pagamentos", token)
     pagamentos_tratados = tratar_pagamentos(pagamentos, token, data_inicio)
     log(f"qtd pagamentos incremental: {len(pagamentos_tratados)}")
     deletar_por_data("eg_pagamentos", "data", data_inicio)
     enviar_supabase("eg_pagamentos", pagamentos_tratados)
 
-    log("FINALIZADO INCREMENTAL DOS ÚLTIMOS 7 DIAS")
+    log("FINALIZADO INCREMENTAL DOS ÚLTIMOS 2 DIAS")
 
 
 if __name__ == "__main__":
